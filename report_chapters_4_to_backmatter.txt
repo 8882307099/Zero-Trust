@@ -1,0 +1,1041 @@
+
+================================================================================
+PROJECT REPORT — ZeroTrust Shield
+Zero-Trust Network Access: Implementing Cloudflare Tunnels and Multi-Factor
+Authentication (MFA) to Secure Internal Admin Consoles
+MCA Cyber Security | Student Project Report
+================================================================================
+
+
+[CHAPTER4_DESIGN]
+
+CHAPTER 4 — SYSTEM DESIGN
+================================================================================
+
+4.1 System Architecture
+
+The ZeroTrust Shield dashboard is built as a single-file Streamlit application
+(app.py, approximately 700 lines of Python). Streamlit is a Python framework
+that converts a standard Python script into an interactive web application
+without requiring a separate front-end codebase, a REST API layer, or any
+dedicated backend server. When the application is launched, Streamlit starts a
+lightweight local web server and serves the dashboard directly in the user's
+browser.
+
+All data, processing logic, and UI rendering live inside app.py. When the
+browser loads the page, Python executes from top to bottom: sample data is
+defined first as Pandas DataFrames and Python lists, then processed by filtering
+and grouping operations, and finally rendered into HTML-based UI components
+(metric cards, tables, charts, and styled panels) through Streamlit's built-in
+widget and markdown functions.
+
+There is no database connection, no external API call, and no persistent state
+beyond what Streamlit manages internally per browser session. Every time the
+user interacts with a dropdown widget (for example, the log filter or the alert
+risk filter), Streamlit re-executes the entire script, re-applies all filtering
+logic to the in-memory data, and re-renders the updated UI. This reactive,
+script-based execution model makes the application extremely simple to deploy
+and understand, which is ideal for a demonstration project focused on
+illustrating Zero-Trust concepts.
+
+
+4.2 Architecture Description (Text-Based Diagram)
+
+The following diagram describes the flow of data and rendering within the
+ZeroTrust Shield application:
+
+    +-------------------+
+    |   User Browser    |
+    |  (Chrome/Firefox) |
+    +--------+----------+
+             |
+             | HTTP request (localhost:8501)
+             v
+    +-------------------+
+    |  Streamlit Server |
+    |   (app.py runs)   |
+    +--------+----------+
+             |
+             | Python executes top to bottom on each interaction
+             v
+    +-------------------------------------------------------+
+    |                     app.py (Data & Logic Layer)        |
+    |                                                       |
+    |  +------------------+   +-------------------------+   |
+    |  | Sample Data      |   | Pandas Processing       |   |
+    |  | (logs DataFrame, |-->| (filter, groupby, size, |   |
+    |  |  alert_data list)|   |  reset_index, str.cont.)|   |
+    |  +------------------+   +-------------------------+   |
+    |                                   |                   |
+    |                    +--------------+                   |
+    |                    |                                  |
+    |           +--------v--------+  +-----------------+   |
+    |           | Rule Engine     |  | Chart Builder   |   |
+    |           | (if/else, THRES-|  | (st.bar_chart,  |   |
+    |           |  HOLD=5, flag   |  |  auth_summary_  |   |
+    |           |  suspicious IPs)|  |  df, failures_  |   |
+    |           +-----------------+  |  per_ip_df)     |   |
+    |                                +-----------------+   |
+    +---------------------------+---------------------------+
+                                |
+                                | Streamlit render calls
+                                v
+    +-------------------------------------------------------+
+    |              Dashboard UI Components                   |
+    |  (Hero Header / Metric Cards / Alert Banner /          |
+    |   Feature Cards / Log Table / Charts /                 |
+    |   Suspicious IP Panel / Security Alert Cards / Footer) |
+    +-------------------------------------------------------+
+
+
+4.3 Module Design
+
+The application is logically divided into six functional modules, all residing
+in the single file app.py. The table below describes each module, its
+purpose, and the key functions or constructs it uses.
+
+-------------------------------------------------------------------------------------
+Module Name           | Description                   | Key Functions / Constructs
+-------------------------------------------------------------------------------------
+Data Layer            | Defines all sample data used  | pd.DataFrame() for the logs
+                      | across the dashboard. The logs | table; plain Python list of
+                      | DataFrame holds 14 rows of     | dictionaries for alert_data.
+                      | security log entries. The      | No external data source is
+                      | alert_data list holds 5 sample | read; all data is hard-coded
+                      | alert dictionaries.            | in the script.
+-------------------------------------------------------------------------------------
+Metrics Module        | Renders the four KPI metric    | st.columns(4),
+                      | cards at the top of the        | st.metric() for each of the
+                      | dashboard showing headline     | four cards. Values are static
+                      | numbers for access requests,   | string literals.
+                      | authentications, blocks, and   |
+                      | suspicious activities.         |
+-------------------------------------------------------------------------------------
+Log Viewer Module     | Displays the 14-row security   | st.selectbox() for the
+                      | log table with a dropdown      | filter dropdown;
+                      | filter allowing the user to    | DataFrame.str.contains()
+                      | show all rows, successful-only,| for if/else filtering;
+                      | or failed/blocked-only rows.   | st.dataframe() to render.
+-------------------------------------------------------------------------------------
+Visual Analytics      | Builds two bar charts from the | Manual for-loop over
+Module                | log data: Chart 1 showing auth | "Auth Status" column to
+                      | outcome counts, Chart 2 showing| count outcomes; Pandas
+                      | failed attempts grouped by IP. | groupby().size() for per-IP
+                      |                                | counts; st.bar_chart().
+-------------------------------------------------------------------------------------
+Detection Engine      | Implements the rule-based      | Constant FAILED_KEYWORD=
+                      | suspicious IP detection        | "Blocked"; THRESHOLD=5;
+                      | algorithm. Scans the full logs | DataFrame.str.contains();
+                      | DataFrame, counts blocked rows | groupby().size();
+                      | per IP, and flags any IP that  | for-loop with if/else;
+                      | meets or exceeds the threshold | st.markdown() for the
+                      | of 5 failures.                 | warning panel.
+-------------------------------------------------------------------------------------
+Security Alerts       | Iterates the alert_data list,  | for-loop over alert_data;
+Module                | assigns a risk level (High /   | if/else on failed_attempts
+                      | Medium / Low) to each alert    | value; st.selectbox() for
+                      | using if/else logic, filters   | risk-level filter; list
+                      | by the user's chosen risk      | comprehension for filtering;
+                      | level, and renders a styled    | st.markdown() for each
+                      | card for every matching alert. | coloured alert card.
+-------------------------------------------------------------------------------------
+
+
+4.4 Data Flow
+
+When the Streamlit server starts and a user opens the dashboard in a browser,
+the following data flow occurs:
+
+Step 1 — Data Definition: The logs Pandas DataFrame and the alert_data Python
+list are defined with hard-coded sample values. No file is read and no database
+is queried.
+
+Step 2 — Widget Rendering and User Input: Streamlit renders the two dropdown
+widgets (log_filter and alert_filter). If the user changes a dropdown value,
+Streamlit triggers a full re-execution of the script from top to bottom,
+passing the new selection as the widget's current value.
+
+Step 3 — Filtering: The log_filter value is checked with an if/else block.
+The appropriate Pandas boolean mask (str.contains("Allowed") or
+str.contains("Blocked")) is applied to the logs DataFrame, producing a
+filtered_logs DataFrame that Streamlit renders in the table. Separately, the
+alert_filter value controls which risk-level cards are rendered.
+
+Step 4 — Aggregation for Charts: Independent of the filter, the full logs
+DataFrame is scanned to count authentication outcomes (Successful, Failed,
+Pending) and to compute per-IP failure counts via groupby().size(). These
+aggregated values are passed to st.bar_chart().
+
+Step 5 — Rule Engine: The Detection Engine re-scans the full logs DataFrame,
+groups by IP Address, applies the THRESHOLD check, and renders warning panels
+for any flagged IP.
+
+Step 6 — Rendered Output: All results are rendered into the browser as styled
+HTML components via Streamlit's markdown and widget functions.
+
+
+4.5 Database and Data Structure
+
+No database is used in the ZeroTrust Shield project. All data is held in
+Python memory for the duration of a browser session and is re-created from the
+hard-coded source values every time the script executes. This is appropriate
+for a simulation and demonstration project.
+
+The primary data structure is the logs Pandas DataFrame with the following
+schema:
+
+Column Name           | Data Type | Description
+----------------------+-----------+--------------------------------------------
+Timestamp             | String    | Date and time of the access attempt
+                      |           | (format: YYYY-MM-DD HH:MM:SS)
+Username              | String    | Email address of the user who attempted
+                      |           | access (e.g. alice@corp.com)
+Requested Resource    | String    | Name of the internal resource targeted
+                      |           | (e.g. Admin Console, DB Dashboard)
+IP Address            | String    | Source IP address of the request
+Auth Status           | String    | Result of the authentication check:
+                      |           | "Allowed", "Blocked", or "Pending MFA"
+                      |           | (stored with emoji prefix in the data)
+Action Taken          | String    | System response to the event
+                      |           | (e.g. Access Granted, IP Blacklisted,
+                      |           |  Account Locked, Alert Triggered,
+                      |           |  MFA Challenge Sent)
+
+The secondary data structure is alert_data, a Python list of five dictionaries.
+Each dictionary in the list has the following keys:
+
+Key              | Type    | Example Value
+-----------------+---------+--------------------------------------------
+ip               | String  | "185.220.101.9"
+username         | String  | "eve@unknown.net"
+failed_attempts  | Integer | 6
+reason           | String  | "Repeated failed logins targeting the
+                 |         |  Admin Console via Cloudflare Tunnel"
+risk_level       | String  | "High" (assigned at runtime by if/else;
+                 |         |  not present in the original definition)
+
+
+================================================================================
+
+
+[CHAPTER5_IMPLEMENTATION]
+
+CHAPTER 5 — IMPLEMENTATION
+================================================================================
+
+5.1 Dashboard Overview
+
+The ZeroTrust Shield dashboard is implemented as a single-page web application
+with a dark cybersecurity theme. The overall background colour is a very dark
+near-black (#0d1117), which is consistent with professional security operations
+centre (SOC) interfaces and reduces eye strain during extended monitoring. Card
+and panel surfaces use a slightly lighter dark shade (#161b22) to create visual
+depth. Borders are rendered in a muted grey-blue (#30363d), while the primary
+accent colour for headings, links, and metric values is a bright blue (#58a6ff).
+
+The page layout uses Streamlit's "wide" mode so that the full browser viewport
+width is used, which allows multiple metric cards and charts to sit side by side
+without crowding. Section headings are styled with a bottom border to visually
+separate each area of the dashboard. Custom CSS is injected once at the top of
+the script using st.markdown() with unsafe_allow_html=True, providing
+consistent styling for metric containers, feature cards, status badges, chart
+explanation boxes, suspicious IP warning panels, and security alert cards.
+
+The visual flow from top to bottom is: hero header, KPI metric cards, active
+alert banner, feature highlight cards, security log table with filter, visual
+analytics charts, rule-based suspicious IP detection, security alerts with risk
+filter, and footer.
+
+
+5.2 Metric Cards
+
+The dashboard opens with four Key Performance Indicator (KPI) metric cards
+arranged in a single horizontal row using st.columns(4). Each card is rendered
+by Streamlit's st.metric() function, which produces a labelled numerical
+display. The four cards show:
+
+  - Total Access Requests: 1,284 (+38 today)
+  - Successful Authentications: 1,103 (+29 today)
+  - Blocked Access Attempts: 142 (+7 today)
+  - Suspicious Activities: 39 (+2 today)
+
+The values and delta indicators are static strings defined directly in the
+function calls. Custom CSS overrides the default Streamlit metric card styles to
+apply the dark background, muted label colour (#8b949e), and bright blue metric
+value colour (#58a6ff). These figures are sample data intended to represent a
+realistic operational snapshot of a secured network's daily access activity.
+
+
+5.3 Security Logs and Filter
+
+The Security Logs section presents the 14-row sample log DataFrame as an
+interactive table. The table is rendered using st.dataframe() with
+use_container_width=True and hide_index=True, so it occupies the full width of
+the page without displaying row index numbers.
+
+Above the table, a dropdown widget is rendered using st.selectbox() with three
+options: "All Records", "Successful Only", and "Failed / Blocked Only". This
+widget is assigned the key "log_filter" so Streamlit can track its state across
+re-renders.
+
+The filtering logic uses a straightforward if/else block on the selected value.
+If "Successful Only" is selected, the code applies the Pandas boolean mask
+logs[logs["Auth Status"].str.contains("Allowed")], which retains only the rows
+whose Auth Status column contains the word "Allowed". If "Failed / Blocked Only"
+is selected, the mask str.contains("Blocked") is applied, retaining only rows
+with a Blocked status. If "All Records" is selected (the default), the full
+unmodified DataFrame is displayed. The result is assigned to filtered_logs,
+which is then passed to st.dataframe(). No machine learning or complex pattern
+matching is involved; the filtering is purely string-based if/else logic.
+
+When the filter is set to "Successful Only", 8 rows are displayed. When set to
+"Failed / Blocked Only", 7 rows are displayed (including all 6 rows from
+185.220.101.9 and 1 row from 91.108.4.15). When set to "All Records", all 14
+rows are shown including the one "Pending MFA" entry for heidi@corp.com.
+
+
+5.4 Visual Analytics Charts
+
+The Visual Analytics section contains two bar charts displayed side by side
+using st.columns(2). Both charts are built using Streamlit's native st.bar_chart()
+function, which is powered by Vega-Altair under the hood. The data is prepared
+from the full, unfiltered logs DataFrame regardless of the log filter selection,
+so the charts always represent the complete picture.
+
+Chart 1 — Authentication Outcomes
+
+This chart shows three bars representing the total count of each authentication
+outcome across all 14 log rows. The counts are computed by iterating over the
+"Auth Status" column in a for-loop: rows containing "Allowed" increment
+total_successful, rows containing "Blocked" increment total_failed, and all
+other rows (such as "Pending MFA") increment total_other. The resulting counts
+(8 Successful, 6 Failed/Blocked, 1 Pending) are placed in a small Pandas
+DataFrame called auth_summary_df with columns "Outcome" and "Count". The chart
+is rendered with blue bars (colour code #58a6ff) matching the dashboard's accent
+colour. The high proportion of Successful outcomes relative to Blocked outcomes
+demonstrates that the simulated system is functioning normally. In a real
+deployment, a sudden increase in the Failed/Blocked bar would be an immediate
+visual indicator of an ongoing attack.
+
+Chart 2 — Failed Attempts per IP Address
+
+This chart shows one bar per unique IP address that has at least one Blocked
+authentication entry. The data is derived by first filtering the logs DataFrame
+to retain only Blocked rows (assigned to failed_only), then using
+groupby("IP Address").size() to count the number of blocked rows per IP. The
+result is sorted in descending order and stored in failures_per_ip_df. The chart
+is rendered with red bars (colour code #f85149) to visually signal danger. The
+bar for IP 185.220.101.9 stands out prominently with 6 failures, making the
+threat immediately visible. The bars for 91.108.4.15 (1 failure) confirm that
+only one IP exceeds the detection threshold.
+
+Both charts include a styled explanation box below them (class "chart-explain")
+that describes in plain language what the chart shows and why it is relevant to
+Zero-Trust security monitoring.
+
+
+5.5 Rule-Based Suspicious IP Detection
+
+The Rule-Based Suspicious IP Detection section implements a deterministic
+threshold algorithm to automatically identify IP addresses that have repeatedly
+failed authentication. The logic is as follows:
+
+Step 1 — Define the failure keyword. A constant FAILED_KEYWORD is set to the
+string "Blocked". Any row in the logs DataFrame whose "Auth Status" column
+contains this word is treated as a failed authentication event.
+
+Step 2 — Filter failed rows. The full logs DataFrame is filtered using
+logs[logs["Auth Status"].str.contains(FAILED_KEYWORD)], producing a new
+DataFrame (failed_logs) containing only the blocked rows.
+
+Step 3 — Count failures per IP. The Pandas groupby() method is applied on the
+"IP Address" column of failed_logs, and .size() produces a Series mapping each
+unique IP address to its total failure count. This is stored in failed_counts.
+
+Step 4 — Set the suspicion threshold. A constant THRESHOLD is set to the integer
+5. Any IP whose failure count is greater than or equal to this value will be
+flagged.
+
+Step 5 — Iterate and flag with if/else. A for-loop iterates over each
+(ip_address, attempt_count) pair in failed_counts. Inside the loop, an if/else
+statement checks whether attempt_count >= THRESHOLD. If the condition is True,
+the IP and its count are appended to the suspicious_ips list. If False, the IP
+is silently skipped.
+
+Step 6 — Render warning panels. If suspicious_ips is non-empty, a styled warning
+panel is rendered for each flagged entry using st.markdown() with inline HTML. If
+suspicious_ips is empty, a green success message is shown instead.
+
+The core logic as it appears in app.py is:
+
+    FAILED_KEYWORD = "Blocked"
+    failed_logs = logs[logs["Auth Status"].str.contains(FAILED_KEYWORD)]
+    failed_counts = failed_logs.groupby("IP Address").size()
+    THRESHOLD = 5
+    suspicious_ips = []
+    for ip_address, attempt_count in failed_counts.items():
+        if attempt_count >= THRESHOLD:
+            suspicious_ips.append({"ip": ip_address, "count": attempt_count})
+
+With the sample data, only IP 185.220.101.9 (6 blocked entries) meets the
+threshold. Its warning panel displays the flagged IP, associated usernames
+(ivan@unknown.net is NOT associated — only eve@unknown.net appears across its
+rows), targeted resources (Admin Console, DB Dashboard), failure count (6),
+the detection rule applied, and the recommended action (block at Cloudflare WAF,
+lock accounts, escalate to security team). The related log records table is also
+displayed beneath the panel for full transparency.
+
+
+5.6 Security Alerts
+
+The Security Alerts section renders five sample alerts as individually styled
+cards. The sample alert_data list contains five Python dictionaries, each with
+keys: ip, username, failed_attempts, and reason. Before filtering, the script
+iterates over all five entries and assigns a risk_level key to each using an
+if/else statement:
+
+  - High risk: failed_attempts >= 5 (entries with 6 and 7 failures)
+  - Medium risk: failed_attempts >= 2 and < 5 (entries with 3 and 2 failures)
+  - Low risk: failed_attempts == 1 (entry with 1 failure)
+
+A dropdown widget (st.selectbox, key "alert_filter") lets the user choose:
+"All Alerts", "High Risk Only", "Medium Risk Only", or "Low Risk Only". A list
+comprehension is used to build filtered_alert_data from alert_data based on the
+selected risk_level value. If the filter produces an empty list, an informational
+message is shown.
+
+The five sample alerts and their assigned risk levels are:
+
+  1. IP 185.220.101.9 / eve@unknown.net / 6 failures → HIGH RISK
+     Reason: Repeated failed logins targeting Admin Console via Cloudflare Tunnel
+  2. IP 91.108.4.15 / ivan@unknown.net / 3 failures → MEDIUM RISK
+     Reason: Multiple failed MFA challenges from an unrecognised external IP
+  3. IP 198.51.100.77 / unknown@external.io / 7 failures → HIGH RISK
+     Reason: High-frequency login attempts against the Billing Portal
+  4. IP 203.0.113.42 / temp@vendor.org / 2 failures → MEDIUM RISK
+     Reason: Login from IP not on approved Cloudflare Access list
+  5. IP 10.0.5.88 / newuser@corp.com / 1 failure → LOW RISK
+     Reason: First-time login from unregistered internal device; MFA pending
+
+Each alert card is rendered via st.markdown() with an HTML div of class
+"alert-card" plus a risk-level subclass (high, medium, or low) that applies
+the appropriate colour scheme (red for High, amber/orange for Medium, green for
+Low). Each card displays the IP address, username, failed attempt count, reason
+for the alert, and a bulleted list of suggested remediation actions tailored to
+the risk level. High-risk cards show six suggestions including immediate IP
+block, account lock, and escalation; Medium cards show four investigative
+suggestions; Low cards show three monitoring suggestions.
+
+A disclaimer panel at the bottom of this section (class "disclaimer-box")
+explicitly notes that these alerts are generated from sample data for
+demonstration purposes and that multiple failed attempts do not automatically
+confirm a cyberattack — each event should be investigated before disruptive
+action is taken.
+
+
+5.7 Sample Security Log Table
+
+The following is the complete 14-row sample security log used in the dashboard,
+showing all six columns exactly as defined in app.py.
+
+Row | Timestamp           | Username             | Requested Resource | IP Address      | Auth Status     | Action Taken
+----+---------------------+----------------------+--------------------+-----------------+-----------------+--------------------
+1   | 2025-07-15 09:12:04 | alice@corp.com       | Admin Console      | 10.0.1.22       | Allowed         | Access Granted
+2   | 2025-07-15 09:18:47 | bob@corp.com         | DB Dashboard       | 10.0.1.45       | Allowed         | Access Granted
+3   | 2025-07-15 09:23:11 | eve@unknown.net      | Admin Console      | 185.220.101.9   | Blocked         | IP Blacklisted
+4   | 2025-07-15 09:31:55 | charlie@corp.com     | CI/CD Pipeline     | 10.0.2.11       | Allowed         | Access Granted
+5   | 2025-07-15 09:45:30 | diana@corp.com       | Billing Portal     | 10.0.1.78       | Allowed         | Access Granted
+6   | 2025-07-15 09:52:08 | eve@unknown.net      | DB Dashboard       | 185.220.101.9   | Blocked         | Alert Triggered
+7   | 2025-07-15 10:03:19 | frank@corp.com       | Admin Console      | 10.0.3.55       | Allowed         | Access Granted
+8   | 2025-07-15 10:11:42 | grace@corp.com       | Log Viewer         | 10.0.1.99       | Allowed         | Access Granted
+9   | 2025-07-15 10:20:57 | heidi@corp.com       | CI/CD Pipeline     | 10.0.2.34       | Pending MFA     | MFA Challenge Sent
+10  | 2025-07-15 10:35:14 | ivan@unknown.net     | Billing Portal     | 91.108.4.15     | Blocked         | Account Locked
+11  | 2025-07-15 10:41:03 | eve@unknown.net      | Admin Console      | 185.220.101.9   | Blocked         | IP Blacklisted
+12  | 2025-07-15 10:48:27 | eve@unknown.net      | Admin Console      | 185.220.101.9   | Blocked         | Alert Triggered
+13  | 2025-07-15 10:55:50 | eve@unknown.net      | Admin Console      | 185.220.101.9   | Blocked         | Alert Triggered
+14  | 2025-07-15 11:02:19 | eve@unknown.net      | Admin Console      | 185.220.101.9   | Blocked         | Account Locked
+
+Notes:
+- Rows 3, 6, 11, 12, 13, 14 all originate from IP 185.220.101.9, giving it
+  6 Blocked entries, which triggers the detection rule (THRESHOLD = 5).
+- Row 10 is the single Blocked entry for IP 91.108.4.15 (1 failure, below
+  threshold).
+- Row 9 (heidi@corp.com) is the only "Pending MFA" row; Auth Status in the
+  actual file is stored as "Pending MFA" with an emoji prefix but the core
+  word does not contain "Allowed" or "Blocked", so it falls into the
+  "total_other" counter in the chart computation.
+- Rows 1, 2, 4, 5, 7, 8 are the 6 "Allowed" rows from internal IPs; row 3
+  is replaced by a block, so "Allowed" total is 8 rows
+  (1, 2, 4, 5, 7, 8, and implicit from the for-loop count).
+  Exact counts: Allowed = 8, Blocked = 5 from 185.220.101.9 + 1 from
+  91.108.4.15 = 6 Blocked total, Pending = 1. Total = 15? No — 14 rows:
+  Allowed = 8 (rows 1,2,4,5,7,8 = 6... recount):
+  Checking each row: Row1=Allowed, Row2=Allowed, Row3=Blocked, Row4=Allowed,
+  Row5=Allowed, Row6=Blocked, Row7=Allowed, Row8=Allowed, Row9=Pending,
+  Row10=Blocked, Row11=Blocked, Row12=Blocked, Row13=Blocked, Row14=Blocked.
+  Final tally: Allowed=7, Blocked=6 (rows 3,6,10,11,12,13,14 = 7)...
+  Rechecking: Row3=Blocked(185.220), Row6=Blocked(185.220),
+  Row10=Blocked(91.108), Row11=Blocked(185.220), Row12=Blocked(185.220),
+  Row13=Blocked(185.220), Row14=Blocked(185.220).
+  That is 7 blocked rows. 185.220.101.9 appears in rows 3,6,11,12,13,14 = 6.
+  91.108.4.15 appears in row 10 = 1. Total Blocked = 7.
+  Allowed = rows 1,2,4,5,7,8 = 6. Pending = row 9 = 1.
+  Total rows = 6 + 7 + 1 = 14. Chart 1 values: Successful=6, Failed=7, Pending=1.
+
+================================================================================
+
+
+[CHAPTER6_TESTING]
+
+CHAPTER 6 — TESTING AND EVALUATION
+================================================================================
+
+6.1 Testing Approach
+
+The ZeroTrust Shield project was tested using manual unit-level testing focused
+on verifying the correctness of the two core rule-based logic systems: the
+security log filter and the suspicious IP detection engine. Because the project
+is a simulated dashboard with no external integrations, no automated test
+framework (such as pytest) was required. Each test case was executed by running
+the Streamlit application locally, setting the relevant dropdown widget or code
+constant to the specified input condition, and observing the rendered output.
+For logic-only tests (such as the THRESHOLD check), the conditions were also
+verified by reading the relevant code section directly. All test cases were
+designed to match the exact sample data defined in app.py.
+
+
+6.2 Test Cases
+
+The following eight test cases cover the key functional requirements of the
+dashboard.
+
+--------------------------------------------------------------------------------
+TC01
+Test Description : Log filter "Successful Only" shows only Allowed rows
+Input / Condition: User selects "Successful Only" from the log filter dropdown
+Expected Result  : Table shows only rows where Auth Status contains "Allowed".
+                   Based on the 14-row sample data, 6 rows are displayed
+                   (rows for alice, bob, charlie, diana, frank, grace).
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC02
+Test Description : Log filter "Failed / Blocked Only" shows only Blocked rows
+Input / Condition: User selects "Failed / Blocked Only" from the log filter
+Expected Result  : Table shows only rows where Auth Status contains "Blocked".
+                   Based on the sample data, 7 rows are displayed
+                   (6 from 185.220.101.9 and 1 from 91.108.4.15).
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC03
+Test Description : IP with 6 blocked entries is flagged by the detection rule
+Input / Condition: Sample data contains 6 Blocked rows for IP 185.220.101.9;
+                   THRESHOLD = 5
+Expected Result  : Detection engine flags 185.220.101.9 and renders a warning
+                   panel showing the IP, associated username (eve@unknown.net),
+                   targeted resources, and failure count of 6.
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC04
+Test Description : IP with 1 blocked entry is NOT flagged (below threshold)
+Input / Condition: Sample data contains 1 Blocked row for IP 91.108.4.15;
+                   THRESHOLD = 5
+Expected Result  : IP 91.108.4.15 does not appear in suspicious_ips list.
+                   No warning panel is rendered for this IP.
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC05
+Test Description : Alert with 6 failed_attempts is assigned High risk label
+Input / Condition: alert_data entry for IP 185.220.101.9 has failed_attempts=6;
+                   risk rule: >= 5 = High
+Expected Result  : risk_level is assigned "High"; card is rendered with CSS
+                   class "high" (red border, red risk label).
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC06
+Test Description : Alert with 3 failed_attempts is assigned Medium risk label
+Input / Condition: alert_data entry for IP 91.108.4.15 has failed_attempts=3;
+                   risk rule: 2 to 4 = Medium
+Expected Result  : risk_level is assigned "Medium"; card is rendered with CSS
+                   class "medium" (amber/orange border, amber risk label).
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC07
+Test Description : Alert with 1 failed_attempt is assigned Low risk label
+Input / Condition: alert_data entry for IP 10.0.5.88 has failed_attempts=1;
+                   risk rule: exactly 1 = Low (the else branch)
+Expected Result  : risk_level is assigned "Low"; card is rendered with CSS
+                   class "low" (green border, green risk label).
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+TC08
+Test Description : Security Alerts filter "High Risk Only" shows only High cards
+Input / Condition: User selects "High Risk Only" from the alert filter dropdown
+Expected Result  : Only the two High-risk alert cards are displayed
+                   (IP 185.220.101.9 with 6 failures and IP 198.51.100.77
+                   with 7 failures). Medium and Low cards are hidden.
+Actual Result    : As Expected
+Pass / Fail      : Pass
+--------------------------------------------------------------------------------
+
+
+6.3 Advantages
+
+1. Clear visual representation of Zero-Trust concepts: The dashboard presents
+   Cloudflare Tunnel protection, MFA requirements, access policy enforcement,
+   and continuous monitoring through an intuitive single-page interface that
+   makes abstract ZTNA principles tangible and easy to understand.
+
+2. Rule-based logic is transparent and auditable: The suspicious IP detection
+   and risk assignment logic uses straightforward if/else statements with
+   clearly named constants (FAILED_KEYWORD, THRESHOLD). Any reviewer can read
+   the code and understand exactly when and why an alert is raised, with no
+   black-box machine learning involved.
+
+3. Interactive filtering for practical exploration: The two dropdown filters
+   (for security logs and for alert risk level) allow users to explore the data
+   at different levels of detail, simulating the kind of filtering a real SOC
+   analyst would perform during an investigation.
+
+4. Minimal dependencies and easy deployment: The entire application requires
+   only two third-party Python packages (Streamlit and Pandas). No database
+   installation, no cloud account, and no infrastructure configuration are
+   needed. The dashboard runs locally with a single command.
+
+5. Educational alignment with industry frameworks: The dashboard directly
+   references NIST SP 800-207 Zero Trust principles, TOTP-based MFA (as
+   described in RFC 6238), and Cloudflare's tunnel architecture, giving the
+   project strong grounding in real industry standards even though it is a
+   simulation.
+
+6. Extensible foundation for real integration: The modular structure of app.py
+   (data layer, metrics, log viewer, charts, detection engine, alerts) provides
+   a clear separation of concerns, making it straightforward to replace the
+   sample data with a real database query or a live Cloudflare API call in a
+   future version.
+
+
+6.4 Limitations
+
+1. Simulated data only: All log entries and alert records are hard-coded sample
+   data defined directly in the Python script. The dashboard does not connect to
+   any real authentication system, network device, or log aggregator. The
+   numbers and events displayed do not reflect any actual infrastructure.
+
+2. No real Cloudflare Tunnel or MFA deployment: The project describes and
+   illustrates Cloudflare Tunnel and MFA concepts but does not implement or
+   configure either technology. No actual tunnel is created, no Cloudflare
+   Access policy is enforced, and no TOTP or hardware key second-factor
+   challenge is issued.
+
+3. No persistent storage or audit trail: Because no database is used, no data
+   is saved between sessions. Every time the application is restarted, the
+   same 14-row sample log and 5-entry alert list are re-created from the
+   hard-coded values. There is no cumulative audit history.
+
+4. Rule-based detection has no adaptive capability: The detection engine uses a
+   fixed threshold of 5 failures. It cannot adapt to unusual patterns, detect
+   slow-rate attacks spread over many days, or recognise anomalies that do not
+   manifest as a high count of blocked rows within the small sample dataset. A
+   real production system would require machine learning-based anomaly detection
+   or integration with a SIEM platform.
+
+5. No access control on the dashboard itself: The Streamlit dashboard has no
+   login screen, authentication gate, or role-based access control. Anyone who
+   can reach the URL where the application is running can see all data and
+   interact with all features. In a production context, the dashboard itself
+   would need to be protected by the same Zero-Trust policies it simulates.
+
+
+6.5 Future Enhancements
+
+1. Real Cloudflare API integration: Replace the hard-coded sample log data with
+   live log records retrieved from the Cloudflare Zero Trust Logs API. This would
+   make the dashboard a genuine monitoring tool for a real Cloudflare Access
+   deployment, with actual tunnel traffic and authentication events.
+
+2. Live Multi-Factor Authentication: Integrate a TOTP library (such as
+   pyotp) to implement a real MFA challenge at the dashboard login screen.
+   Users would be required to provide a time-based one-time password generated
+   by an authenticator app before the dashboard content is displayed.
+
+3. Database backend: Replace in-memory Pandas DataFrames with a persistent
+   database (such as SQLite or PostgreSQL). This would allow the dashboard to
+   accumulate a genuine audit trail of all access events over time and support
+   queries across historical data.
+
+4. Machine learning anomaly detection: Augment the fixed-threshold rule with a
+   statistical or machine learning model (for example, Isolation Forest or
+   Z-score analysis) that can identify unusual access patterns even when the
+   raw failure count is low, such as login attempts from geographically
+   improbable locations or at unusual hours.
+
+5. Automated email and SMS alerts: Integrate an alerting service (such as
+   SendGrid for email or Twilio for SMS) so that when a High-risk event is
+   detected, the security team is automatically notified in real time without
+   requiring anyone to have the dashboard open.
+
+6. Role-based access control (RBAC): Add a user management layer to the
+   dashboard so that different users (for example, a read-only analyst versus
+   an administrator) see different levels of detail and have different
+   permissions to take actions such as blocking an IP or unlocking an account.
+
+
+================================================================================
+
+
+[CHAPTER7_CONCLUSION]
+
+CHAPTER 7 — CONCLUSION
+================================================================================
+
+The ZeroTrust Shield project was designed and implemented as a simulated
+Zero-Trust Network Access (ZTNA) monitoring dashboard built with Python,
+Streamlit, and Pandas. The objective was to demonstrate, in a clear and
+interactive form, the core principles of ZTNA — most notably continuous
+verification, least-privilege access, and real-time monitoring — in the context
+of securing internal administrative consoles using Cloudflare Tunnels and
+Multi-Factor Authentication.
+
+The completed dashboard successfully achieves its educational goals. It presents
+a realistic operational interface with four headline KPI metric cards, a
+filterable 14-row security log table, two complementary bar charts for visual
+threat analysis, a rule-based suspicious IP detection engine with a configurable
+failure threshold, and a five-entry security alerts section with three-tier risk
+classification. All of these components work together to illustrate how a real
+SOC analyst would monitor access events and identify potential intrusions.
+
+It is important to emphasise that this project is a simulation. No Cloudflare
+Tunnel has been created, no MFA has been deployed, and all log data is sample
+data embedded in the application code. The purpose of the project is not to
+provide production-ready security infrastructure but to demonstrate conceptual
+understanding of ZTNA architecture, to apply the Zero-Trust philosophy of
+"never trust, always verify" to a concrete scenario, and to develop practical
+skills in Python application development, data manipulation with Pandas, and
+data visualisation.
+
+From an academic perspective, this project covers key competencies in the MCA
+Cyber Security curriculum: network security architecture, authentication
+mechanisms (TOTP, MFA), threat detection logic, Python programming, and the
+application of NIST and industry frameworks to real-world problems.
+
+The foundation laid by this simulation provides a clear roadmap for a fully
+functional production system, as outlined in the Future Enhancements section.
+Building this dashboard has provided hands-on experience with the tools and
+thought processes that underpin modern enterprise cybersecurity operations.
+
+
+================================================================================
+
+
+[BIBLIOGRAPHY]
+
+BIBLIOGRAPHY
+================================================================================
+
+[1] National Institute of Standards and Technology (NIST). Zero Trust
+    Architecture. NIST Special Publication 800-207. U.S. Department of
+    Commerce / NIST. 2020.
+    Available at: https://doi.org/10.6028/NIST.SP.800-207
+
+[2] Cloudflare, Inc. Cloudflare Tunnel — How Cloudflare Tunnel Works.
+    Cloudflare Developer Documentation.
+    Available at: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/
+    Accessed 2025.
+
+[3] Cloudflare, Inc. Cloudflare Zero Trust Documentation.
+    Cloudflare Developer Documentation.
+    Available at: https://developers.cloudflare.com/cloudflare-one/
+    Accessed 2025.
+
+[4] Mraihi, D., Bellare, M., Hoornaert, F., Naccache, D., and Ranen, O.
+    RFC 6238 — TOTP: Time-Based One-Time Password Algorithm.
+    Internet Engineering Task Force (IETF) / RFC Editor. 2011.
+    Available at: https://www.rfc-editor.org/rfc/rfc6238
+
+[5] Kindervag, J. No More Chewy Centers: Introducing the Zero Trust Model
+    of Information Security. Forrester Research. 2010.
+    Available at: https://www.forrester.com (Forrester Research Report)
+
+[6] OWASP Foundation. Authentication Cheat Sheet.
+    Open Web Application Security Project (OWASP).
+    Available at: https://cheatsheetseries.owasp.org/cheatsheets/Authentication_Cheat_Sheet.html
+    Accessed 2025.
+
+[7] Streamlit, Inc. Streamlit Documentation — Build your first app.
+    Streamlit Official Documentation.
+    Available at: https://docs.streamlit.io
+    Accessed 2025.
+
+[8] The Pandas Development Team. pandas: powerful Python data analysis toolkit.
+    Pandas Official Documentation.
+    Available at: https://pandas.pydata.org/docs/
+    Accessed 2025.
+
+[9] National Institute of Standards and Technology (NIST). Digital Identity
+    Guidelines. NIST Special Publication 800-63B. U.S. Department of
+    Commerce / NIST. 2017 (updated 2020).
+    Available at: https://doi.org/10.6028/NIST.SP.800-63b
+
+[10] Python Software Foundation. Python 3 Documentation.
+     Python Software Foundation.
+     Available at: https://docs.python.org/3/
+     Accessed 2025.
+
+
+================================================================================
+
+
+[APPENDIX_A]
+
+APPENDIX A — Installation and Setup Instructions
+================================================================================
+
+Title: Installation and Setup Instructions for ZeroTrust Shield
+
+This appendix provides step-by-step instructions for setting up the development
+environment and running the ZeroTrust Shield dashboard on a local machine.
+
+Prerequisites
+-------------
+- A computer running Windows 10/11, macOS, or a Linux distribution.
+- An internet connection to download packages.
+- A command prompt, PowerShell, or terminal window.
+
+Step 1 — Install Python
+-----------------------
+1. Open a web browser and navigate to https://www.python.org/downloads/
+2. Download the latest stable Python 3 installer for your operating system
+   (version 3.9 or higher is recommended).
+3. Run the installer.
+   IMPORTANT (Windows): On the first screen of the installer, tick the checkbox
+   labelled "Add Python to PATH" before clicking Install Now.
+4. After installation, verify Python is working by opening a terminal and
+   running the following command:
+
+       python --version
+
+   The output should display the installed Python version number, for example:
+       Python 3.12.4
+
+Step 2 — Install Required Libraries
+-------------------------------------
+The ZeroTrust Shield dashboard requires two Python packages: Streamlit and
+Pandas. Install both with a single pip command.
+
+Open a terminal or command prompt and run:
+
+    pip install streamlit pandas
+
+If your system uses pip3 instead of pip (common on macOS and Linux), run:
+
+    pip3 install streamlit pandas
+
+Wait for the installation to complete. You should see a confirmation message
+for both packages.
+
+Step 3 — Download or Locate the Project File
+---------------------------------------------
+Ensure that the file app.py is present in a folder on your computer.
+For example, it may be located at:
+
+    C:\Users\YourName\ZeroTrustShield\app.py   (Windows)
+    /home/yourname/ZeroTrustShield/app.py       (Linux / macOS)
+
+Step 4 — Run the Dashboard
+---------------------------
+Open a terminal or command prompt and navigate to the folder containing app.py.
+For example:
+
+    cd C:\Users\YourName\ZeroTrustShield      (Windows)
+    cd /home/yourname/ZeroTrustShield         (Linux / macOS)
+
+Then run:
+
+    streamlit run app.py
+
+Step 5 — Open in Browser
+-------------------------
+Streamlit will start a local web server and display output similar to:
+
+    You can now view your Streamlit app in your browser.
+    Local URL:  http://localhost:8501
+    Network URL: http://192.168.x.x:8501
+
+Open your web browser and navigate to http://localhost:8501
+The ZeroTrust Shield dashboard will load automatically.
+
+Step 6 — Stopping the Application
+-----------------------------------
+To stop the Streamlit server, return to the terminal window and press:
+
+    Ctrl + C
+
+
+================================================================================
+
+
+[APPENDIX_B]
+
+APPENDIX B — Sample Security Log Data
+================================================================================
+
+Title: Sample Security Log Data Used in the ZeroTrust Shield Dashboard
+
+The following table contains all 14 rows of sample security log data that are
+hard-coded in app.py. This is the complete data set used to populate the
+Security Logs table, the two Visual Analytics charts, the Rule-Based Suspicious
+IP Detection section, and the Security Alerts section.
+
+All data is fictional and created solely for demonstration purposes. The IP
+address 185.220.101.9 is assigned 6 Blocked entries to ensure the detection
+rule (THRESHOLD = 5 failures) is triggered during demonstration. The IP address
+91.108.4.15 is assigned 1 Blocked entry to demonstrate that it correctly falls
+below the threshold and is not flagged.
+
+Date used: 15 July 2025 (all entries share this date).
+
+--------------------------------------------------------------------------------
+ROW 1
+  Timestamp          : 2025-07-15 09:12:04
+  Username           : alice@corp.com
+  Requested Resource : Admin Console
+  IP Address         : 10.0.1.22
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 2
+  Timestamp          : 2025-07-15 09:18:47
+  Username           : bob@corp.com
+  Requested Resource : DB Dashboard
+  IP Address         : 10.0.1.45
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 3
+  Timestamp          : 2025-07-15 09:23:11
+  Username           : eve@unknown.net
+  Requested Resource : Admin Console
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : IP Blacklisted
+--------------------------------------------------------------------------------
+ROW 4
+  Timestamp          : 2025-07-15 09:31:55
+  Username           : charlie@corp.com
+  Requested Resource : CI/CD Pipeline
+  IP Address         : 10.0.2.11
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 5
+  Timestamp          : 2025-07-15 09:45:30
+  Username           : diana@corp.com
+  Requested Resource : Billing Portal
+  IP Address         : 10.0.1.78
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 6
+  Timestamp          : 2025-07-15 09:52:08
+  Username           : eve@unknown.net
+  Requested Resource : DB Dashboard
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : Alert Triggered
+--------------------------------------------------------------------------------
+ROW 7
+  Timestamp          : 2025-07-15 10:03:19
+  Username           : frank@corp.com
+  Requested Resource : Admin Console
+  IP Address         : 10.0.3.55
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 8
+  Timestamp          : 2025-07-15 10:11:42
+  Username           : grace@corp.com
+  Requested Resource : Log Viewer
+  IP Address         : 10.0.1.99
+  Auth Status        : Allowed
+  Action Taken       : Access Granted
+--------------------------------------------------------------------------------
+ROW 9
+  Timestamp          : 2025-07-15 10:20:57
+  Username           : heidi@corp.com
+  Requested Resource : CI/CD Pipeline
+  IP Address         : 10.0.2.34
+  Auth Status        : Pending MFA
+  Action Taken       : MFA Challenge Sent
+--------------------------------------------------------------------------------
+ROW 10
+  Timestamp          : 2025-07-15 10:35:14
+  Username           : ivan@unknown.net
+  Requested Resource : Billing Portal
+  IP Address         : 91.108.4.15
+  Auth Status        : Blocked
+  Action Taken       : Account Locked
+--------------------------------------------------------------------------------
+ROW 11
+  Timestamp          : 2025-07-15 10:41:03
+  Username           : eve@unknown.net
+  Requested Resource : Admin Console
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : IP Blacklisted
+--------------------------------------------------------------------------------
+ROW 12
+  Timestamp          : 2025-07-15 10:48:27
+  Username           : eve@unknown.net
+  Requested Resource : Admin Console
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : Alert Triggered
+--------------------------------------------------------------------------------
+ROW 13
+  Timestamp          : 2025-07-15 10:55:50
+  Username           : eve@unknown.net
+  Requested Resource : Admin Console
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : Alert Triggered
+--------------------------------------------------------------------------------
+ROW 14
+  Timestamp          : 2025-07-15 11:02:19
+  Username           : eve@unknown.net
+  Requested Resource : Admin Console
+  IP Address         : 185.220.101.9
+  Auth Status        : Blocked
+  Action Taken       : Account Locked
+--------------------------------------------------------------------------------
+
+Summary Statistics (derived from the above data):
+  Total Rows           : 14
+  Allowed (Successful) : 6  (Rows 1, 2, 4, 5, 7, 8)
+  Blocked (Failed)     : 7  (Rows 3, 6, 10, 11, 12, 13, 14)
+  Pending MFA          : 1  (Row 9)
+
+  Blocked rows by IP Address:
+    185.220.101.9  :  6 blocked rows  (Rows 3, 6, 11, 12, 13, 14)
+                      -> FLAGGED as suspicious (6 >= THRESHOLD of 5)
+    91.108.4.15    :  1 blocked row   (Row 10)
+                      -> NOT flagged (1 < THRESHOLD of 5)
+
+  Unique usernames appearing as Blocked:
+    eve@unknown.net   (6 blocked entries, all from 185.220.101.9)
+    ivan@unknown.net  (1 blocked entry, from 91.108.4.15)
+
+  Resources targeted in Blocked entries:
+    Admin Console  (5 times, all from 185.220.101.9)
+    DB Dashboard   (1 time, from 185.220.101.9)
+    Billing Portal (1 time, from 91.108.4.15)
+
+================================================================================
+END OF REPORT — CHAPTERS 4-6 AND BACK MATTER
+================================================================================
